@@ -1,0 +1,11 @@
+return_id,product_id,product_name,return_location_lat,return_location_lng
+R001,P101,Wireless Mouse,28.61,77.21
+R002,P102,HDMI Cable,19.07,72.87
+R003,P103,Phone Charger,12.97,77.59
+R004,P104,USB Hub,22.57,88.36
+R005,P105,Webcam,13.08,80.27
+R006,P106,Keyboard,17.38,78.48
+R007,P107,Monitor Stand,23.03,72.58
+R008,P108,Power Bank,26.85,80.95
+R009,P109,Laptop Sleeve,30.73,76.78
+R010,P110,Bluetooth Speaker,21.17,72.83

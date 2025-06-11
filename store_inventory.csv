@@ -1,0 +1,26 @@
+store_id,store_name,product_id,product_name,current_stock,lat,lng
+S001,Delhi Central,P101,Wireless Mouse,3,28.63,77.22
+S001,Delhi Central,P102,HDMI Cable,8,28.63,77.22
+S001,Delhi Central,P103,Phone Charger,2,28.63,77.22
+S001,Delhi Central,P104,USB Hub,6,28.63,77.22
+S001,Delhi Central,P105,Webcam,1,28.63,77.22
+S002,Mumbai Market,P101,Wireless Mouse,7,19.08,72.86
+S002,Mumbai Market,P102,HDMI Cable,2,19.08,72.86
+S002,Mumbai Market,P103,Phone Charger,4,19.08,72.86
+S002,Mumbai Market,P104,USB Hub,9,19.08,72.86
+S002,Mumbai Market,P105,Webcam,0,19.08,72.86
+S003,Bangalore Store,P101,Wireless Mouse,1,12.96,77.59
+S003,Bangalore Store,P106,Keyboard,2,12.96,77.59
+S003,Bangalore Store,P107,Monitor Stand,5,12.96,77.59
+S003,Bangalore Store,P108,Power Bank,1,12.96,77.59
+S003,Bangalore Store,P109,Laptop Sleeve,2,12.96,77.59
+S004,Chennai Mall,P105,Webcam,3,13.09,80.27
+S004,Chennai Mall,P106,Keyboard,7,13.09,80.27
+S004,Chennai Mall,P107,Monitor Stand,3,13.09,80.27
+S004,Chennai Mall,P108,Power Bank,0,13.09,80.27
+S004,Chennai Mall,P110,Bluetooth Speaker,4,13.09,80.27
+S005,Ahmedabad Plaza,P106,Keyboard,2,23.03,72.58
+S005,Ahmedabad Plaza,P107,Monitor Stand,0,23.03,72.58
+S005,Ahmedabad Plaza,P108,Power Bank,6,23.03,72.58
+S005,Ahmedabad Plaza,P109,Laptop Sleeve,3,23.03,72.58
+S005,Ahmedabad Plaza,P110,Bluetooth Speaker,1,23.03,72.58
