@@ -115,6 +115,18 @@ if search_input:
         filtered_df["return_id"].astype(str).str.contains(search_input)
     ]
 
+# ---------- Interactive Selection ----------
+selected_return = st.selectbox("🖱️ Select a Return ID to View Details", filtered_df["return_id"].unique() if not filtered_df.empty else [])
+
+if selected_return:
+    selected_row = filtered_df[filtered_df["return_id"] == selected_return].iloc[0]
+    st.markdown("### 🔍 Selected Return Details")
+    st.write(f"**Product:** {selected_row['product_name']}")
+    st.write(f"**Return Location:** ({selected_row['return_lat']}, {selected_row['return_lng']})")
+    st.write(f"**Recommended Store:** {selected_row['store_name']}")
+    st.write(f"**Store Location:** ({selected_row['store_lat']}, {selected_row['store_lng']})")
+    st.write(f"**Distance (km):** {selected_row['distance_km']}")
+
 # Summary
 st.markdown("### 📈 Summary")
 st.write(f"**Total Returns:** {len(filtered_df)}")
