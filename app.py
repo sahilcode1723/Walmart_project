@@ -4,7 +4,7 @@ import pydeck as pdk
 from math import radians, sin, cos, sqrt, atan2
 from sklearn.preprocessing import MinMaxScaler
 
-# ---------- Haversine Formula ----------
+# ---------- Haversine ----------
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
     d_lat = radians(lat2 - lat1)
@@ -13,183 +13,192 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
-# ---------- Load CSVs ----------
-returns_df = pd.read_csv("returns.csv")
-inventory_df = pd.read_csv("store_inventory.csv")
-demand_df = pd.read_csv("store_demand.csv")
+# ---------- Caching CSVs ----------
+@st.cache_data
+def load_data():
+    returns = pd.read_csv("returns.csv")
+    inventory = pd.read_csv("store_inventory.csv")
+    demand = pd.read_csv("store_demand.csv")
+    return returns, inventory, demand
 
-# ---------- Merge inventory with demand ----------
-inventory_df = pd.merge(inventory_df, demand_df, on=["store_id", "product_id"], how="left")
-inventory_df["past_week_sales"].fillna(0, inplace=True)
+def main():
+    st.set_page_config(page_title="Smart Return Routing", layout="wide")
 
-# ---------- Recommendation Logic ----------
-recommendations = []
+    returns_df, inventory_df, demand_df = load_data()
 
-for _, row in returns_df.iterrows():
-    product_id = row["product_id"]
-    product_name = row["product_name"]
-    r_lat = row["return_location_lat"]
-    r_lng = row["return_location_lng"]
+    inventory_df = pd.merge(inventory_df, demand_df, on=["store_id", "product_id"], how="left")
+    inventory_df["past_week_sales"].fillna(0, inplace=True)
 
-    candidates = inventory_df[inventory_df["product_id"] == product_id].copy()
-    candidates["distance_km"] = candidates.apply(
-        lambda x: haversine(r_lat, r_lng, x["lat"], x["lng"]), axis=1
+    recommendations = []
+
+    # Sidebar weights
+    stock_weight = st.sidebar.slider("📉 Stock Weight", 0.0, 1.0, 0.5)
+    sales_weight = st.sidebar.slider("📈 Sales Weight", 0.0, 1.0, 0.3)
+    distance_weight = st.sidebar.slider("🧭 Distance Weight", 0.0, 1.0, 0.2)
+    total_weight = stock_weight + sales_weight + distance_weight
+    stock_weight /= total_weight
+    sales_weight /= total_weight
+    distance_weight /= total_weight
+
+    use_boost = sum([stock_weight > 0, sales_weight > 0, distance_weight > 0]) > 1
+
+    st.markdown("### ⚖️ Scoring Weights Breakdown")
+    st.write(f"Normalized Weights Applied:")
+    st.write(f"- 📉 **Stock Weight:** {round(stock_weight, 2)}")
+    st.write(f"- 📈 **Sales Weight:** {round(sales_weight, 2)}")
+    st.write(f"- 🧭 **Distance Weight:** {round(distance_weight, 2)}")
+    st.caption("The final score = (stock × weight) + (sales × weight) + (distance × weight) + optional boost")
+
+    # ---------- Normalize Inventory ----------
+    normalized_data = {}
+    for product_id, group in inventory_df.groupby("product_id"):
+        group = group.copy()
+        group["stock_score"] = 1 - MinMaxScaler().fit_transform(group[["current_stock"]])
+        group["sales_score"] = MinMaxScaler().fit_transform(group[["past_week_sales"]])
+        normalized_data[product_id] = group
+
+    for _, row in returns_df.iterrows():
+        product_id = row["product_id"]
+        product_name = row["product_name"]
+        r_lat = row["return_location_lat"]
+        r_lng = row["return_location_lng"]
+
+        if product_id not in normalized_data:
+            continue
+
+        candidates = normalized_data[product_id].copy()
+        candidates["distance_km"] = candidates.apply(
+            lambda x: haversine(r_lat, r_lng, x["lat"], x["lng"]), axis=1
+        )
+
+        candidates["distance_score"] = 1 - MinMaxScaler().fit_transform(candidates[["distance_km"]])
+        sales_scaled = MinMaxScaler().fit_transform(candidates[["past_week_sales"]])
+        dist_scaled = 1 - MinMaxScaler().fit_transform(candidates[["distance_km"]])
+        candidates["boost"] = 0.5 * sales_scaled.flatten() + 0.5 * dist_scaled.flatten()
+
+        candidates["score"] = (
+            stock_weight * candidates["stock_score"] +
+            sales_weight * candidates["sales_score"] +
+            distance_weight * candidates["distance_score"]
+        )
+        if use_boost:
+            candidates["score"] += 0.1 * candidates["boost"]
+
+        best_store = candidates.loc[candidates["score"].idxmax()]
+        recommendations.append({
+            "return_id": row["return_id"],
+            "product_id": product_id,
+            "product_name": product_name,
+            "return_lat": r_lat,
+            "return_lng": r_lng,
+            "store_name": best_store["store_name"],
+            "store_lat": best_store["lat"],
+            "store_lng": best_store["lng"],
+            "distance_km": round(best_store["distance_km"], 2),
+            "boost_score": round(best_store["boost"], 3)
+        })
+
+    rec_df = pd.DataFrame(recommendations)
+
+    # ---------- Tooltip Setup ----------
+    rec_df["tooltip"] = (
+        "<b>Product:</b> " + rec_df["product_name"] + "<br/>" +
+        "<b>To Store:</b> " + rec_df["store_name"] + "<br/>" +
+        "<b>Location:</b> (" + rec_df["return_lat"].astype(str) + ", " + rec_df["return_lng"].astype(str) + ")"
     )
 
-    if candidates.empty:
-        continue
-
-    # Normalize values
-    scaler = MinMaxScaler()
-
-    stock_score = 1 - scaler.fit_transform(candidates[["current_stock"]])  # lower stock = higher score
-    sales_score = scaler.fit_transform(candidates[["past_week_sales"]])    # higher sales = higher score
-    distance_score = 1 - scaler.fit_transform(candidates[["distance_km"]]) # closer = higher score
-
-    # Final score
-    candidates["score"] = (
-        0.5 * stock_score.flatten() +
-        0.3 * sales_score.flatten() +
-        0.2 * distance_score.flatten()
+    store_tooltip_df = rec_df.groupby(["store_name", "store_lat", "store_lng"]).agg({
+        "product_name": lambda x: ', '.join(sorted(set(x)))
+    }).reset_index()
+    store_tooltip_df["tooltip"] = (
+        "<b>Store:</b> " + store_tooltip_df["store_name"] + "<br/>" +
+        "<b>Products:</b> " + store_tooltip_df["product_name"] + "<br/>" +
+        "<b>Coordinates:</b> (" + store_tooltip_df["store_lat"].astype(str) + ", " + store_tooltip_df["store_lng"].astype(str) + ")"
     )
+    store_tooltip_df["offset_lat"] = store_tooltip_df["store_lat"] + 0.01
+    store_tooltip_df["offset_lng"] = store_tooltip_df["store_lng"] + 0.01
 
-    best_store = candidates.loc[candidates["score"].idxmax()]
+    # ---------- Filters ----------
+    st.title("📍 Smart Product Return Map")
+    st.markdown("🔴 Red = Return Point | 🟢 Green = Recommended Store")
 
-    recommendations.append({
-        "return_id": row["return_id"],
-        "product_id": product_id,
-        "product_name": product_name,
-        "return_lat": r_lat,
-        "return_lng": r_lng,
-        "store_name": best_store["store_name"],
-        "store_lat": best_store["lat"],
-        "store_lng": best_store["lng"],
-        "distance_km": round(best_store["distance_km"], 2)
-    })
+    product_filter = st.multiselect("🔎 Filter by Product", rec_df["product_name"].unique())
+    store_filter = st.multiselect("🏪 Filter by Store", rec_df["store_name"].unique())
+    search_input = st.text_input("🔍 Search by Return ID or Product Name")
 
-rec_df = pd.DataFrame(recommendations)
+    filtered_df = rec_df.copy()
+    if product_filter:
+        filtered_df = filtered_df[filtered_df["product_name"].isin(product_filter)]
+    if store_filter:
+        filtered_df = filtered_df[filtered_df["store_name"].isin(store_filter)]
+    if search_input:
+        filtered_df = filtered_df[
+            filtered_df["product_name"].str.contains(search_input, case=False) |
+            filtered_df["return_id"].astype(str).str.contains(search_input)
+        ]
 
-# ---------- Red Dot Tooltip ----------
-rec_df["tooltip"] = (
-    "<b>Product:</b> " + rec_df["product_name"] + "<br/>" +
-    "<b>To Store:</b> " + rec_df["store_name"] + "<br/>" +
-    "<b>Location:</b> (" + rec_df["return_lat"].astype(str) + ", " + rec_df["return_lng"].astype(str) + ")"
-)
+    # ---------- Selected Return Details ----------
+    selected_return = st.selectbox("🖱️ Select a Return ID to View Details", filtered_df["return_id"].unique() if not filtered_df.empty else [])
+    if selected_return:
+        selected_row = filtered_df[filtered_df["return_id"] == selected_return].iloc[0]
+        st.markdown("### 🔍 Selected Return Details")
+        st.write(f"**Product:** {selected_row['product_name']}")
+        st.write(f"**Return Location:** ({selected_row['return_lat']}, {selected_row['return_lng']})")
+        st.write(f"**Recommended Store:** {selected_row['store_name']}")
+        st.write(f"**Store Location:** ({selected_row['store_lat']}, {selected_row['store_lng']})")
+        st.write(f"**Distance (km):** {selected_row['distance_km']}")
+        st.write(f"**Boost Score:** {selected_row['boost_score']}")
 
-# ---------- Green Dot Tooltip ----------
-store_tooltip_df = rec_df.groupby(
-    ["store_name", "store_lat", "store_lng"]
-).agg({
-    "product_name": lambda x: ', '.join(sorted(set(x)))
-}).reset_index()
-
-store_tooltip_df["tooltip"] = (
-    "<b>Store:</b> " + store_tooltip_df["store_name"] + "<br/>" +
-    "<b>Products:</b> " + store_tooltip_df["product_name"] + "<br/>" +
-    "<b>Coordinates:</b> (" + store_tooltip_df["store_lat"].astype(str) + ", " + store_tooltip_df["store_lng"].astype(str) + ")"
-)
-
-# ---------- Apply Offset to Store Dots ----------
-store_tooltip_df["offset_lat"] = store_tooltip_df["store_lat"] + 0.01
-store_tooltip_df["offset_lng"] = store_tooltip_df["store_lng"] + 0.01
-
-# ---------- Streamlit UI ----------
-st.title("📍 Smart Product Return Map")
-st.markdown("🔴 Red = Return Point | 🟢 Green = Recommended Store (slightly offset to avoid overlap)")
-
-# ---------- Enhancements Start ----------
-
-# Filters
-product_filter = st.multiselect("🔎 Filter by Product", rec_df["product_name"].unique())
-store_filter = st.multiselect("🏪 Filter by Store", rec_df["store_name"].unique())
-search_input = st.text_input("🔍 Search by Return ID or Product Name")
-
-filtered_df = rec_df.copy()
-if product_filter:
-    filtered_df = filtered_df[filtered_df["product_name"].isin(product_filter)]
-if store_filter:
-    filtered_df = filtered_df[filtered_df["store_name"].isin(store_filter)]
-if search_input:
-    filtered_df = filtered_df[
-        filtered_df["product_name"].str.contains(search_input, case=False) |
-        filtered_df["return_id"].astype(str).str.contains(search_input)
-    ]
-
-# ---------- Interactive Selection ----------
-selected_return = st.selectbox("🖱️ Select a Return ID to View Details", filtered_df["return_id"].unique() if not filtered_df.empty else [])
-
-if selected_return:
-    selected_row = filtered_df[filtered_df["return_id"] == selected_return].iloc[0]
-    st.markdown("### 🔍 Selected Return Details")
-    st.write(f"**Product:** {selected_row['product_name']}")
-    st.write(f"**Return Location:** ({selected_row['return_lat']}, {selected_row['return_lng']})")
-    st.write(f"**Recommended Store:** {selected_row['store_name']}")
-    st.write(f"**Store Location:** ({selected_row['store_lat']}, {selected_row['store_lng']})")
-    st.write(f"**Distance (km):** {selected_row['distance_km']}")
-
-# Summary
-st.markdown("### 📈 Summary")
-st.write(f"**Total Returns:** {len(filtered_df)}")
-st.write(f"**Unique Stores Recommended:** {filtered_df['store_name'].nunique()}")
-st.write(f"**Average Distance (km):** {round(filtered_df['distance_km'].mean(), 2)}")
-
-# CSV Export
-st.download_button("⬇️ Download Filtered Recommendations", filtered_df.to_csv(index=False), file_name="filtered_recommendations.csv", mime="text/csv")
-
-# ---------- Enhancements End ----------
-
-# ---------- Map Layers ----------
-return_layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=filtered_df,
-    get_position='[return_lng, return_lat]',
-    get_fill_color='[255, 0, 0, 160]',
-    get_radius=10000,
-    pickable=True,
-)
-
-store_layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=store_tooltip_df,
-    get_position='[offset_lng, offset_lat]',
-    get_fill_color='[0, 200, 0, 160]',
-    get_radius=10000,
-    pickable=True,
-)
-
-line_layer = pdk.Layer(
-    "LineLayer",
-    data=filtered_df,
-    get_source_position='[return_lng, return_lat]',
-    get_target_position='[store_lng, store_lat]',
-    get_color=[0, 0, 0],
-    get_width=2
-)
-
-if not filtered_df.empty:
-    view_state = pdk.ViewState(
-        latitude=filtered_df["return_lat"].mean(),
-        longitude=filtered_df["return_lng"].mean(),
-        zoom=4
-    )
+    # ---------- Summary ----------
+    st.markdown("### 📈 Summary")
+    st.write(f"**Total Returns:** {len(filtered_df)}")
+    st.write(f"**Unique Stores Recommended:** {filtered_df['store_name'].nunique()}")
+    st.write(f"**Average Distance (km):** {round(filtered_df['distance_km'].mean(), 2)}")
+    st.download_button("⬇️ Download Filtered Recommendations", filtered_df.to_csv(index=False), file_name="filtered_recommendations.csv", mime="text/csv")
 
     # ---------- Map ----------
-    st.pydeck_chart(
-        pdk.Deck(
+    return_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=filtered_df,
+        get_position='[return_lng, return_lat]',
+        get_fill_color='[255, 0, 0, 160]',
+        get_radius=10000,
+        pickable=True,
+    )
+    store_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=store_tooltip_df,
+        get_position='[offset_lng, offset_lat]',
+        get_fill_color='[0, 200, 0, 160]',
+        get_radius=10000,
+        pickable=True,
+    )
+    line_layer = pdk.Layer(
+        "LineLayer",
+        data=filtered_df,
+        get_source_position='[return_lng, return_lat]',
+        get_target_position='[store_lng, store_lat]',
+        get_color=[0, 0, 0],
+        get_width=2
+    )
+
+    if not filtered_df.empty:
+        view_state = pdk.ViewState(
+            latitude=filtered_df["return_lat"].mean(),
+            longitude=filtered_df["return_lng"].mean(),
+            zoom=4
+        )
+        st.pydeck_chart(pdk.Deck(
             layers=[line_layer, return_layer, store_layer],
             initial_view_state=view_state,
-            tooltip={
-                "html": "{tooltip}",
-                "style": {"backgroundColor": "black", "color": "white"}
-            }
-        )
-    )
-else:
-    st.warning("⚠️ No data to display on the map. Please adjust your filters.")
+            tooltip={"html": "{tooltip}", "style": {"backgroundColor": "black", "color": "white"}}
+        ))
+    else:
+        st.warning("⚠️ No data to display on the map. Adjust your filters.")
 
+    # ---------- Table ----------
+    st.subheader("📊 Routing Summary")
+    st.dataframe(filtered_df[["return_id", "product_name", "store_name", "distance_km", "boost_score"]])
 
-# ---------- Table ----------
-st.subheader("📊 Routing Summary")
-st.dataframe(filtered_df[[
-    "return_id", "product_name", "store_name", "distance_km"
-]])
+if __name__ == "__main__":
+    main()
