@@ -1,18 +1,22 @@
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
+import numpy as np
 from math import radians, sin, cos, sqrt, atan2
 from sklearn.preprocessing import MinMaxScaler
 import random
-import numpy as np
 
-# ---------- Haversine ----------
-def haversine(lat1, lon1, lat2, lon2):
+# ---------- Faster Vectorized Haversine ----------
+def haversine_vec(lat1, lon1, lat2, lon2):
     R = 6371
-    d_lat = radians(lat2 - lat1)
-    d_lon = radians(lon2 - lon1)
-    a = sin(d_lat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(d_lon / 2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    lat1 = np.radians(lat1)
+    lon1 = np.radians(lon1)
+    lat2 = np.radians(lat2)
+    lon2 = np.radians(lon2)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
     return R * c
 
 # ---------- Caching CSVs ----------
@@ -42,7 +46,9 @@ def genetic_algorithm(returns_df, inventory_df, generations=20, population_size=
             for _, row in returns_df[returns_df["product_id"] == product_id].iterrows():
                 r_lat = row["return_location_lat"]
                 r_lng = row["return_location_lng"]
-                group["distance_km"] = group.apply(lambda x: haversine(r_lat, r_lng, x["lat"], x["lng"]), axis=1)
+                group["distance_km"] = haversine_vec(
+                    r_lat, r_lng, group["lat"].values, group["lng"].values
+                )
                 group["distance_score"] = 1 - MinMaxScaler().fit_transform(group[["distance_km"]])
                 group["score"] = (
                     w_stock * group["stock_score"] +
@@ -68,8 +74,7 @@ def genetic_algorithm(returns_df, inventory_df, generations=20, population_size=
             child = mutate(parent[:])
             next_gen.append(child)
         population = next_gen
-    best = population[0]
-    return best
+    return population[0]
 
 def main():
     st.set_page_config(page_title="Smart Return Routing", layout="wide")
@@ -93,15 +98,13 @@ def main():
 
     recommendations = []
 
-    # ---------- GA Button ----------
     if st.sidebar.button("🧠 Optimize Weights (GA)"):
         w_stock, w_sales, w_dist = genetic_algorithm(returns_df, inventory_df)
-        st.session_state["stock_weight"] = float(round(w_stock, 2))
-        st.session_state["sales_weight"] = float(round(w_sales, 2))
-        st.session_state["distance_weight"] = float(round(w_dist, 2))
+        st.session_state["stock_weight"] = round(w_stock, 2)
+        st.session_state["sales_weight"] = round(w_sales, 2)
+        st.session_state["distance_weight"] = round(w_dist, 2)
         st.sidebar.success("Optimized weights applied!")
 
-    # Sidebar sliders
     stock_weight = st.sidebar.slider("📉 Stock Weight", 0.0, 1.0, st.session_state.get("stock_weight", 0.5), key="stock_weight")
     sales_weight = st.sidebar.slider("📈 Sales Weight", 0.0, 1.0, st.session_state.get("sales_weight", 0.3), key="sales_weight")
     distance_weight = st.sidebar.slider("🧭 Distance Weight", 0.0, 1.0, st.session_state.get("distance_weight", 0.2), key="distance_weight")
@@ -119,7 +122,6 @@ def main():
     use_boost = sum([stock_weight > 0, sales_weight > 0, distance_weight > 0]) > 1
 
     st.markdown("### ⚖️ Scoring Weights Breakdown")
-    st.write(f"Normalized Weights Applied:")
     st.write(f"- 📉 **Stock Weight:** {round(stock_weight, 2)}")
     st.write(f"- 📈 **Sales Weight:** {round(sales_weight, 2)}")
     st.write(f"- 🧭 **Distance Weight:** {round(distance_weight, 2)}")
@@ -142,10 +144,9 @@ def main():
             continue
 
         candidates = normalized_data[product_id].copy()
-        candidates["distance_km"] = candidates.apply(
-            lambda x: haversine(r_lat, r_lng, x["lat"], x["lng"]), axis=1
+        candidates["distance_km"] = haversine_vec(
+            r_lat, r_lng, candidates["lat"].values, candidates["lng"].values
         )
-
         candidates["distance_score"] = 1 - MinMaxScaler().fit_transform(candidates[["distance_km"]])
         sales_scaled = MinMaxScaler().fit_transform(candidates[["past_week_sales"]])
         dist_scaled = 1 - MinMaxScaler().fit_transform(candidates[["distance_km"]])
@@ -244,12 +245,12 @@ def main():
         pickable=True,
     )
     line_layer = pdk.Layer(
-        "LineLayer",
-        data=filtered_df,
-        get_source_position='[return_lng, return_lat]',
-        get_target_position='[store_lng, store_lat]',
-        get_color=[0, 0, 0],
-        get_width=2
+    "LineLayer",
+    data=filtered_df,
+    get_source_position='[return_lng, return_lat]',
+    get_target_position='[store_lng, store_lat]',
+    get_color=[0, 0, 0],
+    get_width=2
     )
 
     if not filtered_df.empty:
@@ -271,3 +272,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
